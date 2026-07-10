@@ -1,0 +1,13 @@
+# Web Automation & Browser Driver Coordination
+selenium>=4.20.0
+
+# HTML Parsing (if you extract page_source from Selenium)
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# HTTP Requests (if your script mixes API requests with browser scraping)
+requests>=2.31.0
+
+# Data Manipulation & Exporting (for CSV / Excel generation)
+pandas>=2.2.0
+openpyxl>=3.1.0

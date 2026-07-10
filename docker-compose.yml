@@ -1,0 +1,10 @@
+services:
+  parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: china_parser
+    volumes:
+      - .:/app
+      - ./output:/app/output
+    restart: "no"
