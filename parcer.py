@@ -36,7 +36,7 @@ def main():
     scraped_pages_set = set()
     
     # 🚫 BROKEN PAGES BLACKLIST
-    BLACKLISTED_PAGES = [9]
+    BLACKLISTED_PAGES = [9, 64]
 
     while True:
         # 1. Page Stabilization Handshake
