@@ -29,4 +29,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Adjust this if your python file is named parcer.py or parser.py
-CMD ["python", "parcer.py"]
+CMD ["python", "parser.py"]
