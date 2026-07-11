@@ -1,10 +1,10 @@
 FROM docker.io/library/python:3.12-slim
 
-# Set environment variables to prevent Python from writing pyc files and buffering stdout
+# Prevent Python from writing .pyc files and enable live terminal output buffering
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies and Chromium + ChromeDriver natively
+# Install system utilities, base rendering font files, and native Chromium + WebDriver packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
@@ -18,15 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Set internal operational workspace container directory
 WORKDIR /app
 
-# Copy and install Python dependencies
+# Copy dependency mappings first to utilize system build layer caches
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your application code
+# Copy all application code into the file architecture layers
 COPY . .
 
-# Adjust this if your python file is named parcer.py or parser.py
+# Initialize the script
 CMD ["python", "parser.py"]
