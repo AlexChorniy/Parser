@@ -24,7 +24,7 @@ def main():
     driver = setup_driver()
     
     # Target one of the specific subpages that tripped the error loop
-    test_subpage_url = "https://www.chinashipbuild.com/company.aspx?pklujyukkpp4Ccbsc"
+    test_subpage_url = "https://www.chinashipbuild.com/company.aspx?pklujyukkpp4cSXgX"
     
     try:
         print(f"🔗 Navigating directly to subpage: {test_subpage_url}")
