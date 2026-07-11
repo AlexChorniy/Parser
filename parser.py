@@ -2,6 +2,7 @@ import os
 import time
 import re
 import csv
+from multiprocessing import Pool, Manager
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -23,28 +24,25 @@ def setup_driver():
     return driver
 
 def parse_vessel_amount(vessels_text):
-    """
-    Parses structural character patterns to return an isolated vessel count.
-    """
     if not vessels_text or vessels_text == "N/A":
         return "N/A"
-    
-    # Matches patterns like: "约有36艘", "5艘大灵便型", "规模约120艘", "船队有7艘"
     amount_match = re.search(r'(?:拥有|规模约|约有|有|拥有约|船队有|共|大约有)\s*(\d+)\s*艘', vessels_text)
     if amount_match:
         return amount_match.group(1).strip()
-        
     fallback_match = re.search(r'(\d+)\s*艘', vessels_text)
     if fallback_match:
         return fallback_match.group(1).strip()
-        
     return "N/A"
 
+def remove_chinese_symbols(text_string):
+    if not text_string:
+        return "N/A"
+    cleaned = re.sub(r'[\u4e00-\u9fff]+', '', text_string)
+    cleaned = re.sub(r'\s*,\s*,', ',', cleaned)
+    cleaned = cleaned.strip().rstrip(',').rstrip(';').strip()
+    return cleaned if cleaned else "N/A"
+
 def extract_clean_profile_data(driver):
-    """
-    Extracts data from the unified text cell container (id='content_cel_text'),
-    then uses regex to split it into clean address, email, and vessel blocks.
-    """
     data = {
         "address": "N/A", 
         "tel": "N/A", 
@@ -53,20 +51,15 @@ def extract_clean_profile_data(driver):
         "vessels": "N/A",
         "vessel_amount": "N/A"
     }
-    
     try:
-        # 1. Grab clean website address from its anchor row mapping if it exists
         try:
             web_element = driver.find_element(By.XPATH, "//tr[@id='content_row_company_website']//a")
             data["website"] = web_element.get_attribute("href").strip()
         except NoSuchElementException:
             pass
 
-        # 2. Extract and split the giant combined text cell block
         text_cell = driver.find_element(By.ID, "content_cel_text")
         cell_html = text_cell.get_attribute("innerHTML")
-        
-        # Split block elements cleanly across HTML line break nodes
         raw_lines = [line.strip() for line in re.split(r'<br\s*/?>', cell_html, flags=re.IGNORECASE)]
         
         address_lines = []
@@ -74,72 +67,56 @@ def extract_clean_profile_data(driver):
         extracted_emails = []
         
         for line_raw in raw_lines:
-            # Strip remaining inner HTML formatting tags
             line = re.sub(r'<[^>]+>', '', line_raw).strip()
             if not line:
                 continue
-                
-            # Parse Tel lines
             if re.search(r'\b(tel|telephone|phone|fax)[:\s]*', line, re.IGNORECASE):
                 if "tel" in line.lower() or "phone" in line.lower() or data["tel"] == "N/A":
-                    clean_tel = re.sub(r'^(tel|telephone|phone|fax)[:\s]*', '', line, flags=re.IGNORECASE).strip()
-                    data["tel"] = clean_tel if clean_tel else data["tel"]
+                    data["tel"] = re.sub(r'^(tel|telephone|phone|fax)[:\s]*', '', line, flags=re.IGNORECASE).strip()
                 continue
-                
-            # Extract and isolate pure emails from the line
             line_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', line)
             if line_emails:
                 extracted_emails.extend(line_emails)
                 continue
-                
-            # Separate physical address from descriptive notes based on character sets
-            if re.search(r'[\u4e00-\u9fff]', line):  # Line contains Chinese characters -> Description Note
-                vessel_lines.append(line)
+            if re.search(r'[\u4e00-\u9fff]', line):
+                calculated_amt = parse_vessel_amount(line)
+                if calculated_amt != "N/A":
+                    data["vessel_amount"] = calculated_amt
+                english_only_vessel_note = remove_chinese_symbols(line)
+                if english_only_vessel_note != "N/A":
+                    vessel_lines.append(english_only_vessel_note)
             else:
-                # English/Latin characters are categorized as the physical address
                 if not any(kwd in line.lower() for kwd in ["isletmeciligi", "inc.", "co ltd", "pty ltd"]):
                     address_lines.append(line)
 
-        # Map findings back to the data dictionary
         if address_lines:
-            data["address"] = ", ".join(address_lines).strip().rstrip(',').strip()
+            data["address"] = remove_chinese_symbols(", ".join(address_lines))
         if extracted_emails:
             data["email"] = "; ".join(list(set(extracted_emails)))
         if vessel_lines:
             data["vessels"] = " ".join(vessel_lines).strip()
-            data["vessel_amount"] = parse_vessel_amount(data["vessels"])
-            
-    except Exception as e:
-        print(f"⚠️ Combined cell block layout parser error: {e}")
-        
+    except Exception:
+        pass
     return data
 
-def main():
-    print("🚀 Initializing Failure-Resilient Native Click China Shipbuild Parser...")
+def scrape_single_page(args):
+    page_number, shared_saved_dict = args
+    print(f"Worker Thread: Launching parallel Chrome instance for Page {page_number}...")
     driver = setup_driver()
-    parsed_companies = []
     
     output_dir = "/app/output"
-    os.makedirs(output_dir, exist_ok=True)
     txt_output_path = os.path.join(output_dir, "company_directory.txt")
     excel_output_path = os.path.join(output_dir, "company_directory.xls")
     
-    # Initialize the Excel file structure
-    with open(excel_output_path, "w", encoding="utf-8-sig", newline="") as xl_file:
-        xl_writer = csv.writer(xl_file, delimiter="\t")
-        xl_writer.writerow(["Company Name", "Website (URL)", "Company Address", "Tel", "Email", "Vessels Amount", "Vessels/Description"])
-        xl_file.flush()
-        os.fsync(xl_file.fileno())
-
-    target_url = "https://www.chinashipbuild.com/companys.aspx?nmkhTk8Pl4ENaoklppLwi94XgaclppkLL0p4JXapoljjlSLPHH4c"
-    print(f"🔗 Connecting to target portal...")
-    driver.get(target_url)
-    time.sleep(5)
-    
-    scraped_pages_set = {1}
-    BLACKLISTED_PAGES = []
-
-    while True:
+    if page_number == 2:
+        page_url = "https://www.chinashipbuild.com/companys.aspx?nmkhTk8Pl4ENaoklppLwi94XgaclppkLL0p4JXapoljjlSLPHH4c"
+    else:
+        page_url = f"https://www.chinashipbuild.com/companys.aspx?page={page_number}"
+        
+    try:
+        driver.get(page_url)
+        time.sleep(4)
+        
         info_table_id = None
         for potential_id in ["content_tb_companys", "content_tb_info"]:
             try:
@@ -148,156 +125,103 @@ def main():
                 break
             except NoSuchElementException:
                 continue
-
-        # RECOVERY JUMP MECHANISM
+                
         if not info_table_id:
-            print("⚠️ Grid elements hidden by 1st page layout state. Attempting bypass recovery click to Page 2...")
+            driver.quit()
+            return
+            
+        info_table = driver.find_element(By.ID, info_table_id)
+        rows = info_table.find_elements(By.XPATH, ".//tr[td/a[contains(@href, 'company.aspx')]]")
+        
+        profile_links = []
+        for row in rows:
             try:
-                page_2_link = driver.find_element(By.XPATH, "//span[@id='content_lb_pager']/a[text()='2']")
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", page_2_link)
-                time.sleep(0.5)
-                page_2_link.click()
-                print("➡️ Successfully clicked Page 2 link to clear layout lock!")
-                time.sleep(4)
+                link = row.find_element(By.XPATH, ".//td/a[contains(@href, 'company.aspx')]")
+                profile_links.append((link.get_attribute("href"), link.text.strip()))
+            except:
                 continue
-            except NoSuchElementException:
-                print("⚠️ Core pager elements unreadable. Refreshing context window...")
-                driver.get(target_url)
-                time.sleep(5)
+                
+        for url, name in profile_links:
+            try:
+                clean_name = remove_chinese_symbols(name)
+                
+                # Check shared memory keys safely
+                if clean_name in shared_saved_dict:
+                    continue
+
+                driver.get(url)
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "content_tb_company")))
+                
+                profile = extract_clean_profile_data(driver)
+                
+                if clean_name in shared_saved_dict:
+                    continue
+                    
+                # Store entry name in the synchronized shared dict keys
+                shared_saved_dict[clean_name] = True
+
+                with open(txt_output_path, "a", encoding="utf-8") as file:
+                    file.write(f"Company name: {clean_name};\n")
+                    file.write(f"Website (URL): {profile['website']};\n")
+                    file.write(f"Company address: {profile['address']};\n")
+                    file.write(f"Tel: {profile['tel']};\n")
+                    file.write(f"Email: {profile['email']};\n")
+                    file.write(f"Vessels amount: {profile['vessel_amount']};\n")
+                    file.write(f"Vessels/Description: {profile['vessels']}\n")
+                    file.write("-" * 50 + "\n")
+                    file.flush()
+
+                with open(excel_output_path, "a", encoding="utf-8-sig", newline="") as xl_file:
+                    xl_writer = csv.writer(xl_file, delimiter="\t")
+                    xl_writer.writerow([
+                        clean_name, 
+                        profile["website"], 
+                        profile["address"], 
+                        profile["tel"], 
+                        profile["email"], 
+                        profile["vessel_amount"], 
+                        profile["vessels"]
+                    ])
+                    xl_file.flush()
+                    
+                print(f"✅ Page {page_number}: Saved {clean_name}")
+            except Exception:
                 continue
+                
+    except Exception:
+        pass
+    finally:
+        driver.quit()
 
-        try:
-            current_pager_bold = driver.find_element(By.XPATH, "//span[@id='content_lb_pager']/b")
-            page_number = int(current_pager_bold.text.strip())
-        except (NoSuchElementException, ValueError):
-            page_number = 2  
-
-        print(f"\n📖 --- Current Viewport: Page {page_number} ---")
-
-        if page_number in BLACKLISTED_PAGES:
-            print(f"🚫 Page {page_number} is blacklisted! Advancing track...")
-            scraped_pages_set.add(page_number)
-        elif page_number == 1:
-            print("⏩ Page 1 layout caught in parsing loop. Forcing jump to pagination...")
-            scraped_pages_set.add(1)
-        elif page_number in scraped_pages_set:
-            print(f"⏩ Page {page_number} already processed. Looking for next link...")
-        else:
-            processed_on_this_page = 0
-            company_idx = 0
-            
-            while True:
-                try:
-                    info_table = driver.find_element(By.ID, info_table_id)
-                    rows = info_table.find_elements(By.XPATH, ".//tr[td/a[contains(@href, 'company.aspx')]]")
-                    
-                    if company_idx >= len(rows):
-                        break
-                    
-                    target_row = rows[company_idx]
-                    link_element = target_row.find_element(By.XPATH, ".//td/a[contains(@href, 'company.aspx')]")
-                    company_name = link_element.text.strip()
-                    
-                    if company_name and company_name not in [c['name'] for c in parsed_companies]:
-                        print(f"🕵️‍♂️ [{len(parsed_companies) + 1}] Processing profile details for: {company_name}")
-                        
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_element)
-                        time.sleep(0.2)
-                        link_element.click()
-                        
-                        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "content_tb_company")))
-                        
-                        # Execute deep parsing block
-                        profile = extract_clean_profile_data(driver)
-                        
-                        parsed_companies.append({"name": company_name})
-                        processed_on_this_page += 1
-                        
-                        # 📝 1. Real-time Text file update
-                        with open(txt_output_path, "a", encoding="utf-8") as file:
-                            file.write(f"Company name: {company_name};\n")
-                            file.write(f"Website (URL): {profile['website']};\n")
-                            file.write(f"Company address: {profile['address']};\n")
-                            file.write(f"Tel: {profile['tel']};\n")
-                            file.write(f"Email: {profile['email']};\n")
-                            file.write(f"Vessels amount: {profile['vessel_amount']};\n")
-                            file.write(f"Vessels/Description: {profile['vessels']}\n")
-                            file.write("-" * 50 + "\n")
-                            file.flush()
-                            os.fsync(file.fileno())
-
-                        # 📊 2. Real-time Tabbed Excel file update
-                        with open(excel_output_path, "a", encoding="utf-8-sig", newline="") as xl_file:
-                            xl_writer = csv.writer(xl_file, delimiter="\t")
-                            xl_writer.writerow([
-                                company_name, 
-                                profile["website"], 
-                                profile["address"], 
-                                profile["tel"], 
-                                profile["email"], 
-                                profile["vessel_amount"], 
-                                profile["vessels"]
-                            ])
-                            xl_file.flush()
-                            os.fsync(xl_file.fileno())
-
-                        driver.back()
-                        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, info_table_id)))
-                        time.sleep(0.4)
-                    
-                    company_idx += 1
-                    
-                except (StaleElementReferenceException, TimeoutException):
-                    print("🔄 DOM shift detected during extraction. Recalibrating tracking row context...")
-                    time.sleep(2)
-                    continue
-                except Exception as e:
-                    print(f"⚠️ Skipping row element due to an error: {e}")
-                    company_idx += 1
-                    continue
-
-            print(f"✅ Processed Page {page_number}. Extracted {processed_on_this_page} entries on this pass.")
-            scraped_pages_set.add(page_number)
-
-        # Smart Pagination Transitions
-        try:
-            visible_page_links = driver.find_elements(By.XPATH, "//span[@id='content_lb_pager']/a[not(text()='<<') and not(text()='>>')]")
-            target_link_element = None
-            target_page_val = None
-            
-            for link in visible_page_links:
-                try:
-                    val = int(link.text.strip())
-                    if val not in scraped_pages_set and val not in BLACKLISTED_PAGES:
-                        if target_page_val is None or val < target_page_val:
-                            target_page_val = val
-                            target_link_element = link
-                except ValueError:
-                    continue
-
-            if target_link_element:
-                print(f"➡️ Transitioning towards Page {target_page_val}...")
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target_link_element)
-                time.sleep(0.5)
-                target_link_element.click()
-            else:
-                forward_links = driver.find_elements(By.XPATH, "//span[@id='content_lb_pager']/a[text()='>>']")
-                if forward_links:
-                    print(f"⏩ Section exhaustion hit on page {page_number}. Clicking next deck index block '>>'...")
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", forward_links[0])
-                    time.sleep(0.5)
-                    forward_links[0].click()
-                else:
-                    print("🏁 Pagination tracks completely completed.")
-                    break
-            time.sleep(3)
-
-        except Exception as pagination_err:
-            print(f"⚠️ Pagination tracking engine execution halted: {pagination_err}")
-            break
-
-    print(f"\n🎉 ALL RUN EXECUTION METRICS COMPLETE!")
-    driver.quit()
+def main():
+    print("🚀 Initializing 6-Core Parallel English-Only Parser Engine...")
+    
+    output_dir = "/app/output"
+    os.makedirs(output_dir, exist_ok=True)
+    excel_output_path = os.path.join(output_dir, "company_directory.xls")
+    
+    if not os.path.exists(excel_output_path):
+        with open(excel_output_path, "w", encoding="utf-8-sig", newline="") as xl_file:
+            xl_writer = csv.writer(xl_file, delimiter="\t")
+            xl_writer.writerow(["Company Name", "Website (URL)", "Company Address", "Tel", "Email", "Vessels Amount", "Vessels/Description"])
+    
+    with Manager() as manager:
+        # Utilizing manager.dict() to reliably keep an exact unique record set across all processes
+        shared_saved_dict = manager.dict()
+        
+        BLACKLISTED_PAGES = {}
+        pages_pool = [page for page in range(2, 96) if page not in BLACKLISTED_PAGES]
+        
+        worker_tasks = [(page, shared_saved_dict) for page in pages_pool]
+        
+        NUMBER_OF_PROCESSORS = 8
+        print(f"🔥 Spawning {NUMBER_OF_PROCESSORS} independent English-only web worker tasks concurrently...")
+        print(f"📋 Total pages queued for parallel parsing: {len(worker_tasks)} (Pages 2-95)")
+        
+        with Pool(processes=NUMBER_OF_PROCESSORS) as pool:
+            pool.map(scrape_single_page, worker_tasks)
+        
+    print(f"\n🎉 ALL MULTI-CORE RUN SEGMENTS COMPLETE! Files saved without duplicates.")
 
 if __name__ == "__main__":
     main()
