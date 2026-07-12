@@ -24,17 +24,23 @@ def setup_driver():
 
 def parse_vessel_amount(vessels_text):
     """
-    Parses structural character patterns to return an isolated vessel count.
+    Parses structural English character patterns to isolate a numeric vessel fleet count.
+    Matches phrases like: "fleet of 36 vessels", "owns 12 ships", "around 120 units", etc.
     """
     if not vessels_text or vessels_text == "N/A":
         return "N/A"
     
-    # Matches patterns like: "约有36艘", "5艘大灵便型", "规模约120艘", "船队有7艘"
-    amount_match = re.search(r'(?:拥有|规模约|约有|有|拥有约|船队有|共|大约有)\s*(\d+)\s*艘', vessels_text)
+    # Matches patterns like: "owns 36 vessels", "fleet of 5 ships", "total 120 units", "around 7 vessels"
+    amount_match = re.search(
+        r'(?:owns|fleet\s+of|has|total|around|approximately|operates)\s*(\d+)\s*(?:vessels|ships|units|crafts|boats)', 
+        vessels_text, 
+        re.IGNORECASE
+    )
     if amount_match:
         return amount_match.group(1).strip()
         
-    fallback_match = re.search(r'(\d+)\s*艘', vessels_text)
+    # Fallback to look for isolated digits preceding typical shipping characters
+    fallback_match = re.search(r'(\d+)\s*(?:vessels|ships|units)', vessels_text, re.IGNORECASE)
     if fallback_match:
         return fallback_match.group(1).strip()
         
@@ -46,12 +52,12 @@ def extract_clean_profile_data(driver):
     then uses regex to split it into clean address, email, and vessel blocks.
     """
     data = {
-        "address": "N/A", 
-        "tel": "N/A", 
-        "email": "N/A", 
-        "website": "N/A",
-        "vessels": "N/A",
-        "vessel_amount": "N/A"
+        "address": " ", 
+        "tel": " ", 
+        "email": " ", 
+        "website": " ",
+        "vessels": " ",
+        "vessel_amount": " "
     }
     
     try:
@@ -92,11 +98,11 @@ def extract_clean_profile_data(driver):
                 extracted_emails.extend(line_emails)
                 continue
                 
-            # Separate physical address from descriptive notes based on character sets
-            if re.search(r'[\u4e00-\u9fff]', line):  # Line contains Chinese characters -> Description Note
+            # Separate physical address from descriptive notes based on maritime keywords
+            if any(kwd in line.lower() for kwd in ["vessel", "ship", "fleet", "bulk", "tanker", "container", "built", "dwt"]):
                 vessel_lines.append(line)
             else:
-                # English/Latin characters are categorized as the physical address
+                # Standard geographic / street characters are categorized as the physical address
                 if not any(kwd in line.lower() for kwd in ["isletmeciligi", "inc.", "co ltd", "pty ltd"]):
                     address_lines.append(line)
 
